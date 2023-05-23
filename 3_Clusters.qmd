@@ -1,0 +1,161 @@
+---
+title: "Cluster data"
+author: "Meryl Theng"
+date: today
+date-format: "D MMM YYYY"
+format: pdf
+editor: visual
+---
+
+## Introduction
+
+In this document, I estimate the abundance of Black-eared Miners from cluster data.
+
+## Load packages and data
+
+```{r}
+#| warning: false
+library(Distance)
+library(dplyr)
+library(tidyr)
+
+# read data
+raw_data <- read.csv("Data/All_sightings.csv", header = TRUE)
+
+# randomly select one of the transects that were walked more than once 
+# to standardise effort
+sample_dupl <- raw_data %>%
+  filter(Ref %in% c("RLB034", "RLB147", "RLB224", "RLB290", "RLB417", "RLB586")) %>%
+  group_by(Ref) %>%
+  slice_sample(n=1)
+
+# remove duplicated transects and add back the sampled ones
+ds_data0 <- rbind(raw_data[!raw_data$Ref %in% 
+                             c("RLB034", "RLB147", "RLB224", "RLB290", "RLB417", "RLB586"),],
+                  sample_dupl)
+
+ds_data <- data.frame(Sample.Label = ds_data0$Ref, 
+                      Region.Label = case_when(ds_data0$Area == 300 ~ "BURNT", 
+                                               ds_data0$Area == 600 ~ "OLD"),
+                      distance = ds_data0$Distance,
+                      Effort = rep(1000, nrow(ds_data0)),
+                      size = ds_data0$No..of.miners,
+                      Area = ds_data0$Area)
+  
+nrow(ds_data[!is.na(ds_data$distance),]) # how many datapoints
+```
+
+## Explore the data
+
+```{r}
+#| fig-cap: Frequency distribution of distances to clusters.
+#| fig-height: 5
+
+# plot
+par(mfrow = c(2,2))
+hist(ds_data$distance, breaks = seq(0,400,10), main="", xlab="Distance (m)")
+hist(ds_data$distance, breaks = seq(0,400,20), main="", xlab="Distance (m)")
+hist(ds_data$distance, breaks = seq(0,400,25), main="", xlab="Distance (m)")
+hist(ds_data$distance, breaks = seq(0,400,50), main="", xlab="Distance (m)")
+```
+
+We can see spiked data close to the line. Thomas et al. (2010) states: "For such data, different models will give very different estimates of density, so it is important to understand what has caused the spike, and to modify field procedures accordingly." The following can be considered in the field sampling procedure in future surveys:
+
+::: {.callout-note}
+"Spiked data may arise even when there has been no failure of an assumption. For example, in surveys of breeding songbirds, singing males may be much more detectable than (non-singing and cryptic) females. In that case, the spike arises because females are only detectable close to the line. The simplest solution in this case is to additionally record whether the bird was singing. An analysis can then be conducted for singing birds, allowing estimation of the number of territories. If females are certain to be detected when on the line, then a separate analysis of females could be conducted, if sample size is adequate, or sex could be included as a covariate in an MCDS analysis. Similar issues apply for point transect surveys." [**(Thomas et al. 2010)**](https://doi.org/10.1111/j.1365-2664.2009.01737.x)
+:::
+
+For now, I try to deal with the spike. A distance bin interval of 25m at a truncation distance of 125m appears to fit nicely to a half-normal key function.
+
+```{r}
+#| fig-cap: Frequency distribution of distances to clusters.
+#| fig-height: 4.5
+mybreaks <- seq(0,400,25) 
+
+# plot
+hist(ds_data$distance, breaks = mybreaks, main="", xlab="Distance (m)")
+abline(v=125, col="red")
+```
+
+More information on picking the right truncation distance for detection model fitting for reference:
+
+::: {.callout-note}
+"We truncate because otherwise extra adjustment terms may be needed to fit a long tail to the detection function. This reduces precision for little gain, as data a long way from the line or point contribute little to the abundance estimate (Buckland et al. 2001:103--108, 151--153). We typically truncate around 5% of distances for line transect sampling, and more for point transect sampling (for which a higher proportion of detections corresponds to the tail of the detection function, Buckland et al. 2001:151)." [**(Thomas et al. 2010)**](https://doi.org/10.1111/j.1365-2664.2009.01737.x)
+:::
+
+## Distance analysis
+
+I first fit a model with habitat type(?) treated as a stratification factor (i.e., under `Region.Label`). This means that detection functions fitted for both habitats are the same key function, but the scale parameter of the key function differs between years. I've done this to allow for the detection model to vary between habitat types, in case there is a difference.
+
+```{r}
+#| fig-height: 5
+#| warning: false
+conversion <- convert_units("meter", "meter", "square kilometer")
+mybreaks <- seq(0,125,25) 
+
+# half-normal
+hn_strat <- ds(ds_data, 
+                truncation = list(left=0, right=125), 
+              convert_units = conversion, cutpoints = mybreaks,
+              key = "hn", adjustment = "cos", #order = 2, 
+              formula=~as.factor(Region.Label))
+
+# check fit
+plot(hn_strat, main="", xlab="Distance (m)",
+     showpoints=FALSE, lwd=3, xlim=c(0, 125),pdf=F)
+```
+
+Examining the `summary()` output, we see the region-specific estimates being provided:
+
+```{r}
+#| warning: false
+summary(hn_strat)
+```
+
+The summary also shows beta parameters associated with region-specific estimates of the shape parameter of the half-normal key function. The standard errors of the beta (for `OLD`) is larger than the estimate itself. This suggests there us not a strong 'region' signal on the shape of the detection functions. Perhaps a model with a pooled detection function would be equally suitable for these data. See reference [here](https://groups.google.com/g/distance-sampling/c/O3K16BPXx-Q/m/KqzAG8upCAAJ).
+
+```{r}
+#| warning: false
+# fit pooled detection function
+hn_pooled <- ds(ds_data, 
+                truncation = list(left=0, right=125), 
+              convert_units = conversion, cutpoints = mybreaks,
+              key = "hn", adjustment = "cos")
+
+gof_ds(hn_pooled)
+```
+
+Having a look at the point and interval estimates of the two models bears out the minute difference between the models.
+
+```{r}
+dens_strat <- hn_strat$dht$individuals$D
+dens_pooled <- hn_pooled$dht$individuals$D
+
+compare_est <- rbind( data.frame(year = dens_strat$Label,
+                           estimate = dens_strat$Estimate,
+                           lcl = dens_strat$lcl,
+                           ucl = dens_strat$ucl,
+                           Method = "Stratified"),
+                      data.frame(year = dens_pooled$Label,
+                           estimate = dens_pooled$Estimate,
+                           lcl = dens_pooled$lcl,
+                           ucl = dens_pooled$ucl,
+                           Method = "Pooled") )
+
+library(ggplot2)
+
+ggplot(compare_est, aes(x=year, y=estimate, shape = Method)) +
+  geom_pointrange(aes(ymin=lcl, ymax=ucl), color="black", 
+                  position=position_dodge(width=0.3)) +
+  labs(x="Method", y = "Miners per sq km")
+```
+
+We can go with the pooled model, which has a slightly smaller CV($\hat{D}$); i.e., higher precision.
+
+Comparing the 2015 density estimates with that of the previous document ("1_Nest-vs-First.pdf"), we see a 19% increase in point estimates (8.52 vs 7.16) by using all the data (as opposed to removing clusters with \<7 birds). There is also a marked improvement in precision (CV = 0.15 vs 0.25) when all observations are included; though note that I right-truncated the data at 125m to get a good detection model fit.
+
+## What's next
+
+I believe this approach is a more appropriate than the original one that discards clusters with \<7 birds as mentioned in my email correspondence. Furthermore, a good precision (CV = 0.15) now gives us flexibility to reduce survey effort.
+
+I'll start work on exploring the reduction of survey effort via bootstrapping the data. Though, a word of warning: the distance analysis has to be tailored to the characteristics of each dataset/bootstrap sample (as I have demonstrated above) to obtain the best model fit. The variation in distributions of the bootstrap samples will be higher at low survey effort.

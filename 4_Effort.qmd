@@ -1,0 +1,140 @@
+---
+title: "Effort-precision relationship: how much effort is sufficient?"
+author: "Meryl Theng"
+date: today
+date-format: "D MMM YYYY"
+format: pdf
+editor: visual
+---
+
+## Introduction
+
+In this document, I explore the effort-precision relationship using a bootstrap analysis to determine the minimum survey effort allowable for a target precision of CV < 0.2 (i.e., considered the gold-standard target for population monitoring; Pollock and Hines 1990)
+
+## Load packages and data
+
+```{r}
+#| warning: false
+library(Distance)
+library(dplyr)
+library(tidyr)
+
+# read data
+raw_data <- read.csv("Data/All_sightings.csv", header = TRUE)
+
+# randomly select one of the transects that were walked more than once 
+# to standardise effort
+sample_dupl <- raw_data %>%
+  filter(Ref %in% c("RLB034", "RLB147", "RLB224", "RLB290", "RLB417", "RLB586")) %>%
+  group_by(Ref) %>%
+  slice_sample(n=1)
+
+# remove duplicated transects and add back the sampled ones
+ds_data0 <- rbind(raw_data[!raw_data$Ref %in% 
+                             c("RLB034", "RLB147", "RLB224", 
+                               "RLB290", "RLB417", "RLB586"),],
+                  sample_dupl)
+
+ds_data <- data.frame(Sample.Label = ds_data0$Ref, 
+                      Region.Label = case_when(ds_data0$Area == 300 ~ "BURNT", 
+                                               ds_data0$Area == 600 ~ "OLD"),
+                      distance = ds_data0$Distance,
+                      Effort = rep(1000, nrow(ds_data0)),
+                      size = ds_data0$No..of.miners,
+                      Area = ds_data0$Area)
+
+# prepare data for bootstrapping (just adding an `object` identifier)
+bootdat <- data.frame(cbind(ds_data), object = 1:nrow(ds_data))
+```
+
+## Load functions for bootstrapping analysis
+
+I wrote custom functions to bootstrap the distance data. The first function `resample_data` essentially resample data at transect-level (i.e., `Sample.Label`) at a specified sampling effort level (`transect_effort`) with or without replacement (e.g., `replacement = T`). This function is wrapped within the second function `get_boot_est`, which goes onto apply a distance analysis on the resampled data to obtain density point and precision estimates of *individuals*. 
+
+For simplicity and to minimise computation time (i.e., to fit hundreds of resampled data), the distance analysis applied within the `get_boot_est` function only fits a half-normal key function -- i.e., the best fit function for the original/full data.
+
+Note that a proper distance analysis involves decisions on truncation distances (i.e., $w$), distance bin intervals and detection model selection that are unique to each dataset. Thus, the estimates obtained from this analysis may be subject to further variation, especially at lower sampling effort levels (e.g., 200 km) which see higher variation.
+
+```{r}
+# load custom bootstrap functions
+source("R/bootstrap_functions.R")
+```
+
+## Run bootstrap 
+
+I first create a list of sampling (i.e., transect) effort values I want to sample from and the corresponding number of bootstrap replicates for each of those effort levels. The original sampling effort was 619 km walked, so I sample at effort levels of 500, 400, 300 and 200 km with 100 replications each.
+
+I then apply the `get_boot_est` function over the list of effort values to perform the bootstrap sampling and obtain the density estimate for each bootstrap sample. 
+
+```{r}
+#| eval: false
+# create list of i) transect effort and ii) no. bootstrap samples
+# 500, 400, 300 and 200 km transect effort with 100 reps each
+effort.list <- as.list(c(rep(500,100), rep(400,100),rep(300,100),rep(200,100)))
+
+# apply function over list of effort values
+output.list <- lapply(effort.list, function(x){
+  get_boot_est(bootdat, transect_effort = x, replacement = T, 
+               right_w = 125, bin_int = 25, # same values used in analysis of original dataset
+               conversion = convert_units("meter", "meter", "square kilometer"))
+})
+
+## save data (optional)
+# save(output.list, file="boot_res.RData")
+```
+
+## Results
+
+Now let's visualise the results.
+
+Having a look at the point estimates, we see that the original point estimate ($\hat{D} = 8.52$) is well within the distribution of point estimates from bootstrap samples for all effort levels. However, the variation is higher when sampling effort is lower. 
+
+```{r}
+#| fig-cap: Density estimates for 200, 300, 400 and 500 km of transect survey effort based on bootstrap samples of the 2015--2016 Black-eared Miner cluster data. The horizontal red line represents the density estimate from the original/full dataset.
+#| fig-height: 4.5
+
+load(file="boot_res.RData") # if saved
+
+# convert output list of density estimates to a dataframe
+boot_est <- do.call(rbind, output.list)
+boot_est$Effort <- as.factor(boot_est$Effort)
+
+# PLOTS
+# Point estimates
+boxplot(Estimate ~ Effort, data = boot_est, col = "white")
+stripchart(Estimate ~ Effort,
+           data = boot_est,
+           method = "jitter",
+           pch = 19,
+           col = 2:5,
+           cex=0.5,
+           vertical = TRUE,
+           add = TRUE)
+abline(h = 8.52, col = "red") # estimate from the original dataset
+```
+
+Precision estimates (CV) are perhaps a more important determinant for survey effort.
+
+The effort-precision plot shows that an effort of 400 km was sufficient to yield the target CV (of < 0.2) for 75% of the bootstrap samples. A higher effort of 500 km yields an acceptable CV for almost all (> 95%) of the samples. Lower efforts of 200 and 300 km would not be sufficient for CV < 0.2. 
+
+```{r}
+#| fig-cap: Coefficient of variation (CV) of density estimates for 200, 300, 400 and 500 km of transect survey effort based on bootstrap samples of the 2015--2016 Black-eared Miner cluster data. The horizontal red line represents a CV of 0.2.
+#| fig-height: 4.5
+# CV
+boxplot(cv ~ Effort, data = boot_est)
+stripchart(cv ~ Effort,
+           data = boot_est,
+           method = "jitter",
+           pch = 19,
+           col = 2:5,
+           cex=0.5,
+           vertical = TRUE,
+           add = TRUE)
+abline(h = 0.2, col = "red") # CV = 0.2
+```
+
+## Recommendations
+
+Based on these results, I recommend that future survey efforts can be reduced to 450 -- 500 km to achieve a CV of <0.2. Survey effort should be **no lower** than 400 km. 
+
+Note that this effort-precision recommendation assumes that the abundance of Black-eared Miner individuals in future surveys is similar to that of the 2015--2016. A significant decline in population will mean that this recommendation no longer applies. 

@@ -1,0 +1,211 @@
+---
+title: "BEM abundance estimates pooling across time periods"
+author: "Meryl Theng"
+date: today
+date-format: "D MMM YYYY"
+format: pdf
+editor: visual
+---
+
+## Introduction
+
+In this document, I aimed to pool the distance data (of clusters) from the three time periods (2000, 2007, 2015) to estimate the abundance of Black-eared Miner clusters and individuals. The purpose of pooling the data was to increase the sample size and increase precision of abundance estimates.
+
+## Load packages and data
+
+```{r}
+#| warning: false
+library(Distance)
+library(dplyr)
+library(tidyr)
+
+# read data
+data.2015 <- read.csv("Data/data.frame.2015b.csv", header = TRUE)
+data.2007 <- read.csv("Data/data.frame.2007.csv", header = TRUE)
+data.2000 <- read.csv("Data/data.frame.2000e.csv", header = TRUE)
+
+# prepare data
+data.2000 <- data.2000 %>%
+  mutate(Region.Label = 
+           case_when(Region.Label == "Bookmark" ~ as.factor(2000)))
+data.2007 <- data.2007 %>%
+  mutate(Region.Label = 
+           case_when(Region.Label == "Bookmark" ~ as.factor(2007)) )
+data.2015 <- data.frame(Region.Label = rep(as.factor(2015), nrow(data.2015)), 
+                        Area = data.2015$Area, 
+                        Sample.Label = data.2015$Sample.Label,
+                        Effort = data.2015$Effort,
+                        distance = data.2015$distance,
+                        size = data.2015$size)
+
+data.pooled <- rbind(data.2000, data.2015) # left out 2007 because of inconsistent sampling of only unburnt areas
+
+data.pooled <- data.pooled %>%
+  mutate(size = if_else(size < 6, NA_real_, as.numeric(size)),
+         distance = if_else(is.na(size), NA_real_, as.numeric(distance)),
+         Area = 900)
+
+nrow(data.pooled[!is.na(data.pooled$distance),]) # how many datapoints
+```
+
+I only use the data from 2000 and 2015 because the sampling protocols are similar (i.e., entire 900 sq km sampled, instead of only unburnt areas sampled in 2017). I also ignore geographical stratification (i.e., OLD vs. BURNT) because `ds()` cannot accomodate changes in stratification between time periods (i.e., `Area` has to be consistent within each strata).
+
+Instead, I treat `Year` as the stratification factor to allow year-specific estimates of abundance later on. Assumptions associated with this decision are: (i)
+
+## Explore the data
+
+```{r}
+#| fig-cap: Frequency distribution of distances to nest or largest group.
+#| fig-height: 5
+
+# plot
+par(mfrow = c(2,2))
+hist(data.pooled$distance, breaks = seq(0,300,10), main="", xlab="Distance (m)")
+hist(data.pooled$distance, breaks = seq(0,300,20), main="", xlab="Distance (m)")
+hist(data.pooled$distance, breaks = seq(0,300,30), main="", xlab="Distance (m)")
+hist(data.pooled$distance, breaks = seq(0,300,50), main="", xlab="Distance (m)")
+```
+
+## Distance analysis
+
+I select a binning interval of 20m, with right-truncation at 100m to avoid non-monotonicity in the detection fit...
+
+I first fit a model with year treated as a stratification factor (i.e., under `Region.Label`). By combining years, detection functions fitted for all years are the same key function, but the scale parameter of the key function differs between years.
+
+```{r}
+#| fig-height: 5
+#| warning: false
+conversion <- convert_units("meter", "meter", "square kilometer")
+mybreaks <- seq(0,100,20) 
+
+# half-normal
+hn_strat <- ds(data.pooled, 
+                truncation = list(left=0, right=100), 
+              convert_units = conversion, cutpoints = mybreaks,
+              key = "hn", adjustment = "cos", #order = 2, 
+              formula=~as.factor(Region.Label))
+
+# check fit
+plot(hn_strat, main="", xlab="Distance (m)",
+     showpoints=FALSE, lwd=3, xlim=c(0, 100),pdf=F) 
+```
+
+Examining the `summary()` output, we see the year-specific estimates being provided:
+
+```{r}
+#| warning: false
+summary(hn_strat)
+```
+
+The summary also shows beta parameters associated with year-specific estimates of the shape parameter of the half-normal key function. The standard errors of the beta (for 2015) is larger than the estimate itself. This suggests there us not a strong 'year' signal on the shape of the detection functions. Perhaps a model with a pooled detection function would be equally suitable for these data. See reference [here](https://groups.google.com/g/distance-sampling/c/O3K16BPXx-Q/m/KqzAG8upCAAJ).
+
+```{r}
+hn_pooled <- ds(data.pooled, 
+                truncation = list(left=0, right=100), 
+              convert_units = conversion, cutpoints = mybreaks,
+              key = "hn", adjustment = "cos")
+```
+
+Having a look at the point and interval estimates of the two models bears out the minute difference between the models.
+
+```{r}
+dens_yrcov <- hn_strat$dht$individuals$D
+dens_cons <- hn_pooled$dht$individuals$D
+
+compare_est <- rbind( data.frame(year = dens_yrcov$Label,
+                           estimate = dens_yrcov$Estimate,
+                           lcl = dens_yrcov$lcl,
+                           ucl = dens_yrcov$ucl,
+                           Method = "Year cov."),
+                      data.frame(year = dens_cons$Label,
+                           estimate = dens_cons$Estimate,
+                           lcl = dens_cons$lcl,
+                           ucl = dens_cons$ucl,
+                           Method = "Pooled") )
+
+library(ggplot2)
+
+ggplot(compare_est, aes(x=year, y=estimate, shape = Method)) +
+  geom_pointrange(aes(ymin=lcl, ymax=ucl), color="black", 
+                  position=position_dodge(width=0.3)) +
+  labs(x="Year", y = "Miners per sq km")
+```
+
+We can go with the pooled model, which has a slightly smaller year-specific CV($\hat{D}$); i.e., higher precision.
+
+Comparing the 2015 density estimates with that of the previous document ("1_Nest-vs-First.pdf"), we see lower point estimates (6.18 vs 7.16) and an improvement in precision (CV = 0.20 vs 0.25). The lower density estimate is likely a ???
+
+The improvement in CV likely comes from the better detection model fit to the data (with a truncation distance of 100m and binning distance of 20m) AND some pooling effect.
+
+```{r}
+#| eval: false
+#| echo: false
+#| fig-height: 3
+#| warning: false
+
+# separately fit ds
+hn_2000 <- ds(data.pooled[data.pooled$Region.Label == "2000",], 
+                truncation = list(left=0, right=100), 
+              convert_units = conversion, cutpoints = mybreaks,
+              key = "hn", adjustment = "cos")
+hn_2015 <- ds(data.pooled[data.pooled$Region.Label == "2015",], 
+                truncation = list(left=0, right=100), 
+              convert_units = conversion, cutpoints = mybreaks,
+              key = "hn", adjustment = "cos")
+```
+
+```{r}
+#| eval: false
+#| echo: false
+#| label: tbl-density
+#| tbl-cap: "Density estimate of individuals"
+#| tbl-subcap: 
+#|   - "Stratified"
+#|   - "Pooled"
+#| layout-ncol: 2
+#| warning: false
+dens_2000 <- hn_2000$dht$individuals$D
+dens_2015 <- hn_2015$dht$individuals$D
+
+dens_sep <- data.frame(Label = dens_cons$Label,
+                       Estimate = c(dens_2000$Estimate, dens_2015$Estimate,
+                                    NA),
+                       cv = c(dens_2000$cv, dens_2015$cv,NA),
+                       AIC = unlist(c(AIC(hn_2000)["AIC"],
+                                      AIC(hn_2015)["AIC"], 
+                                      AIC(hn_2000)["AIC"]+
+                                        AIC(hn_2015)["AIC"])))
+dens_pooled <- data.frame(dens_cons[,c('Label','Estimate','cv')],
+                          AIC = c(NA,NA,unlist(AIC(hn_pooled0)["AIC"])))
+
+library(kableExtra)
+knitr::kable(dens_sep, digits=2, row.names = FALSE) %>%
+  kable_paper(full_width = FALSE) 
+
+knitr::kable(dens_pooled, digits=2, row.names = FALSE) %>%
+  kable_paper(full_width = FALSE) 
+```
+
+```{r}
+#| eval: false
+#| echo: false
+stratum.est <- dht2(hn_pooled, flatfile=data.pooled2, 
+                    strat_formula = ~as.factor(Year), 
+                    er_est = "P2", 
+                    convert_units = conversion)
+print(stratum.est, report="abundance", groups=T)
+
+res_pooled <- data.frame(Year = stratum.est$`as.factor(Year)`, 
+                         N.hat = stratum.est$Abundance, 
+                         N.CV = stratum.est$Abundance_CV,
+                         N.lci = stratum.est$LCI,
+                         N.uci = stratum.est$UCI)
+
+library(kableExtra)
+knitr::kable(res_pooled, digits=c(0,0,2,0,0), row.names = FALSE) %>%
+  kable_paper(full_width = FALSE) 
+```
+
+## Conclusion
+
+The

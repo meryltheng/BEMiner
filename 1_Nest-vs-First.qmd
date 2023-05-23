@@ -1,0 +1,221 @@
+---
+title: "BEM abundance estimates from nest or first distances"
+author: "Meryl Theng"
+date: today
+date-format: "D MMM YYYY"
+format: pdf
+editor: visual
+---
+
+## Introduction
+
+In this document, I compare the abundance estimate ($\hat{N}$) of clusters and individuals obtained from the distances to the nest (or largest group of miners) AND distances to the first miners detected along the transect.
+
+## Load packages and data
+
+```{r}
+#| warning: false
+library(Distance)
+library(dplyr)
+library(tidyr)
+
+# distance to largest group or nest
+nest_dist <- read.csv("Data/data.frame.2015b.csv", header = TRUE)
+
+# distance to first miner
+first_dist <- read.csv("Data/data.frame.2015.csv", header = TRUE)
+
+# remove small colonies (more than halves the dataset)
+nest_dist1 <- nest_dist %>%
+  mutate(size = if_else(size < 6, NA_real_, as.numeric(size)),
+         distance = if_else(is.na(size), NA_real_, as.numeric(distance)) )
+first_dist1 <- first_dist %>%
+  mutate(size = if_else(size < 6, NA_real_, as.numeric(size)),
+         distance = if_else(is.na(size), NA_real_, as.numeric(distance)) )
+
+nrow(nest_dist1[!is.na(nest_dist1$distance),]) # how many datapoints
+nrow(first_dist1[!is.na(first_dist1$distance),]) # how many datapoints
+```
+
+\[Warning\] Note that 38 observations may be too few. Buckland et al. (2015, pp. 23) mentions: "*at least 60--80 animals (or animal clusters) should be detected for reliable estimation of the detection function for line transect sampling, and at least 75--100 for point transect sampling. Analyses are possible with smaller numbers of detections, but it can then be a matter of luck whether the detection function is well-modelled. For example, when sample size is small, just two or three additional sightings on or very close to the line or point can affect estimation appreciably.*"
+
+There appears to be duplicate records (based on `Sample.Label`) in the dataset...
+
+```{r}
+nest_duplicates <- names(which(table(nest_dist1$Sample.Label)>1))
+nest_dist1[nest_dist1$Sample.Label %in% nest_duplicates,]
+```
+
+I remove the duplicate records.
+
+```{r}
+nest_dist1 <- nest_dist1 %>% distinct(Sample.Label, .keep_all = TRUE)
+first_dist1 <- first_dist1 %>% distinct(Sample.Label, .keep_all = TRUE)
+```
+
+## Explore the data
+
+Exploring the data first can help with determining the truncation distances and binning intervals to use. I won't specify these parameters in the distance analysis here to be consistent with the approach used in the report, but it is worth considering.
+
+Here's a look at the data binned at 10, 25, 30 and 50m intervals. 10m is likely to small an interval to cover the range of error in estimating cluster centre, so let's ignore that. At 25 and 30m intervals, there is a spike in observations closer to 150m. Truncating the data at 150m and fitting the detection function to these bin intervals may be problematic because of the spike at the end.
+
+```{r}
+#| fig-cap: Frequency distribution of distances to nest or largest group.
+#| fig-height: 5
+# plot
+par(mfrow = c(2,2))
+hist(nest_dist1$distance, breaks = seq(0,250,10), main="Nest", xlab="Distance (m)")
+hist(nest_dist1$distance, breaks = seq(0,250,25), main="Nest", xlab="Distance (m)")
+hist(nest_dist1$distance, breaks = seq(0,250,30), main="Nest", xlab="Distance (m)")
+hist(nest_dist1$distance, breaks = seq(0,250,50), main="Nest", xlab="Distance (m)")
+```
+
+```{r}
+#| fig-cap: Frequency distribution of distances to first miner.
+#| fig-height: 5
+# plot
+par(mfrow = c(2,2))
+hist(first_dist1$distance, breaks = seq(0,250,10), main="First", xlab="Distance (m)")
+hist(first_dist1$distance, breaks = seq(0,250,25), main="First", xlab="Distance (m)")
+hist(first_dist1$distance, breaks = seq(0,250,30), main="First", xlab="Distance (m)")
+hist(first_dist1$distance, breaks = seq(0,250,50), main="First", xlab="Distance (m)")
+```
+
+## Distance analysis
+
+I fit the data to both datasets using the half-normal detection function with cosine adjustment of order 2 (previously determined to be the best model for the data). Without specifying the `cutpoints` (i.e., binning intervals) the `ds` function determines the intervals for us.
+
+```{r}
+#| warning: false
+conversion <- convert_units("meter", "meter", "square kilometer")
+
+# original analysis (truncate at 150m)
+hn_nest <- ds(nest_dist1, truncation = list(left=0, right=150), 
+               convert_units = conversion, order = 2,
+               key = "hn", adjustment = "cos")
+
+# bespoke cutpoints, no truncation
+hn_first <- ds(first_dist1, truncation = list(left=0, right=150), 
+               convert_units = conversion, order = 2,
+               key = "hn", adjustment = "cos")
+```
+
+`ds` automatically binned data into 25m intervals - is this appropriate? What is an appropriate binning interval based on how accurately distance to cluster centre can be determined in the field (e.g., $\pm 50$m)? Would further distances be less accurately estimated and require larger distance bins beyond a certain distance?
+
+```{r}
+#| fig-height: 3
+#| warning: false
+par(mfrow = c(1,2))
+plot(hn_nest, main="Nest", xlab="Distance (m)",
+     showpoints=FALSE, lwd=3, xlim=c(0, 150),pdf=F) # check fit
+plot(hn_first, main="First", xlab="Distance (m)",
+     showpoints=FALSE, lwd=3, xlim=c(0, 150),pdf=F) # check fit
+```
+
+Density estimates $\hat{D}$ from both the 'nest' (distance to cluster centre) and 'first' (distance to nearest animal) datasets appear similar. The slightly higher density estimates obtained in the 'first' dataset is likely overestimating abundance --- using distance to nearest animal tends to underestimate distances and overestimate abundance (see [discussion](https://groups.google.com/g/distance-sampling/c/q6_-Y20-lPQ/m/ZzOAKE_KRTUJ)).
+
+Note that my estimates for the nest distance data are slightly different from that in the report - I'm not quite sure why!
+
+```{r}
+#| label: tbl-density
+#| tbl-cap: "Density estimate of individuals"
+#| tbl-subcap: 
+#|   - "Nest"
+#|   - "First"
+#| layout-ncol: 2
+#| warning: false
+hn_nest_res <- summary(hn_nest)
+hn_first_res <- summary(hn_first)
+
+res_nest <- hn_nest_res[["dht"]][["individuals"]][["D"]][,-c(3,7)]
+res_first <- hn_first_res[["dht"]][["individuals"]][["D"]][,-c(3,7)]
+
+library(kableExtra)
+knitr::kable(res_nest, digits=2, row.names = FALSE 
+             ) %>%
+  kable_paper(full_width = FALSE) 
+
+knitr::kable(res_first, digits=2, row.names = FALSE 
+             ) %>%
+  kable_paper(full_width = FALSE) 
+```
+
+Here are the abundance estimates $\hat{N}$ of individuals across the entire area.
+
+```{r}
+#| label: tbl-abundance
+#| tbl-cap: "Abundance estimate of individuals"
+#| tbl-subcap: 
+#|   - "Nest"
+#|   - "First"
+#| layout-ncol: 2
+#| warning: false
+
+res_nest <- hn_nest_res[["dht"]][["individuals"]][["N"]][,-c(3,4,7)]
+res_first <- hn_first_res[["dht"]][["individuals"]][["N"]][,-c(3,4,7)]
+
+library(kableExtra)
+knitr::kable(res_nest, digits=0, row.names = FALSE 
+             ) %>%
+  kable_paper(full_width = FALSE) 
+
+knitr::kable(res_first, digits=0, row.names = FALSE 
+             ) %>%
+  kable_paper(full_width = FALSE) 
+```
+
+Given the wide confidence intervals, both the density and abundance estimates are not significantly different between the nest and first datasets.
+
+## Density/abundance estimates across time
+
+Unfortunately, the precision of density/abundance estimates of individuals (or colonies for that matter) are already low (i.e., CV \> 0.2). The wide CI of estimates are likely not meaningful for detecting changes in BEM abundance over time periods, *unless* the differences are very large.
+
+It is useful to plot the density estimates across time periods to visualise this. I used the density estimates of colonies in unburnt/core area across the years (from the best model), since the upper and lower confidence limits of these estimates were reported.
+
+According to @fig-time, there was no change in density of BEM colonies within the core area across the three time periods.
+
+```{r}
+#| label: fig-time
+#| fig-cap: "Density estimate of BEM colonies in unburnt area across three time periods."
+#| warning: false
+col_estimate <- data.frame(year = as.factor(c("2000","2007","2015")),
+                           estimate = c(0.657, 0.329, 0.573),
+                           lcl = c(319/900, 70/592, 19/592),
+                           ucl = c(1097/900, 543/592, 602/592))
+
+library(ggplot2)
+
+ggplot(col_estimate, aes(x=year, y=estimate)) +
+  geom_pointrange(aes(ymin=lcl, ymax=ucl), color="black") +
+  labs(x="Year", y = "Density estimate")
+```
+
+I also compared the abundance of colonies in the entire area (900 km^2^) between 2000 and 2015 (for which data was available). According to these estimates, there was no (detectable) change in colony abundance between 2000 and 2015, even after the 2006 fire event (@fig-abuntime).
+
+```{r}
+#| label: fig-abuntime
+#| fig-cap: "Abundance estimate of BEM colonies in entire area across two time periods."
+#| warning: false
+col_abun_est <- data.frame(year = as.factor(c("2000","2015")),
+                           estimate = c(591, 481),
+                           lcl = c(319, 236),
+                           ucl = c(1097, 983))
+
+ggplot(col_abun_est, aes(x=year, y=estimate)) +
+  geom_pointrange(aes(ymin=lcl, ymax=ucl), color="black") +
+  labs(x="Year", y = "Abundance estimate")
+```
+
+If CIs of abundance/density estimates for individuals are available for the earlier time periods, it may be worth comparing too.
+
+## Conclusion
+
+The precision of density/abundance estimates of BEM colonies/individuals are already poor, making it very difficult to detect changes in population size across time. Thus, any reduction in sampling effort will worsen this issue further.
+
+It may be worth rethinking the sampling protocol with the goal of improving precision *before* considering any reduction in sampling effort. The following may be considered:
+
+-   including observations with colony sizes of 7 or less (which more than doubles the no. of observations); and
+
+-   recording animals individually.
+
+Expanding on the second point, Buckland et al. 2015 (pp. 45) notes that if clusters are **spread out** so that the location of the cluster centre is difficult to identify (or more distant animals in the cluster may be undetected), it may be preferred to record animals individually (if it is feasible to record all detected individuals with their distances). However, note that recording group animals as individuals may cause overdispersion in the data due to non-independence of observations.
